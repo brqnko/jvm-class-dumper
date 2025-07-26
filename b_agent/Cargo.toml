@@ -1,0 +1,21 @@
+[package]
+name = "b_agent"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21.1"
+jvmti = "0.5.0"
+libc = "0.2.172"
+thiserror = "2.0.12"
+zip = "3.0.0"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.9", features = ["consoleapi", "libloaderapi", "processenv", "winbase"] }
+windows = { version = "0.56.0", features = ["Win32_System_SystemServices"] }
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
