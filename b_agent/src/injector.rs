@@ -20,11 +20,7 @@ pub trait ClientTrait: Send + Sync + 'static {
     where
         Self: Sized;
 
-    fn client_classes(&self) -> Result<HashMap<String, Vec<u8>>, crate::error::Error>;
-
-    fn retransform_classes(&self) -> Result<HashMap<String, Vec<u8>>, crate::error::Error>;
-
-    fn class_names_to_retransform(&self) -> Result<Vec<String>, crate::error::Error>;
+    fn on_classfile_load_hook(&self) -> Result<HashMap<String, Vec<u8>>, crate::error::Error>;
 
     fn retransformer_class_name(&self) -> &str;
 
@@ -37,9 +33,10 @@ static BRIDGE: Mutex<Option<crate::bridge::JavaBridge>> = Mutex::new(None);
 // global client instance
 static CLIENT: Mutex<Option<Box<dyn ClientTrait>>> = Mutex::new(None);
 
-// global set of classes that are being retransforming
-// this is referenced in the class_file_load_hook to check if the class should be retransformed
-static RETRANSFORMING_CLASSES: LazyLock<Mutex<HashSet<String>>> =
+static CLASSES_TO_LOAD: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+static LOADED_CLASSES: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 #[cfg(target_os = "windows")]
@@ -155,78 +152,48 @@ impl BAgentInjector {
     }
 
     fn run_internal(&mut self) -> Result<(), crate::error::Error> {
-        let classes_to_retransform = load_classes_to_retransform(
-            &mut self.jvm.get_env()?,
-            CLIENT
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .class_names_to_retransform()?,
-        )?;
         load_client_classes(
             &mut self.jvm.get_env()?,
             self.jvmti_raw,
-            &classes_to_retransform[0],
             &crate::jvm::get_url_class(&mut self.jvm.get_env()?)?,
             CLIENT.lock().unwrap().as_mut().unwrap(),
             BRIDGE.lock().unwrap().as_mut().unwrap(),
         )?;
 
-        for class in &classes_to_retransform {
-            self.jvmti
-                .set_event_notification_mode(jvmti::event::VMEvent::ClassFileLoadHook, true);
+        self.jvmti
+            .set_event_notification_mode(jvmti::event::VMEvent::ClassFileLoadHook, true);
 
-            unsafe {
-                let Some(retransform_classes) = (**self.jvmti_raw).RetransformClasses else {
-                    return Err(crate::error::Error::XValueNotOfType("retransform classes"));
-                };
+        println!("Waiting for classes to be loaded...");
 
-                retransform_classes(
-                    self.jvmti_raw,
-                    1,
-                    &(class.as_raw() as jvmti::native::JavaClass),
-                );
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        while !CLASSES_TO_LOAD.lock().unwrap().is_empty() {
+            let taken = CLASSES_TO_LOAD.lock().unwrap().drain().collect::<Vec<_>>();
+            let classes = load_classes_to_retransform(&mut self.jvm.get_env()?, taken.clone())?;
+            for class in classes {
+                unsafe {
+                    let Some(retransform_classes) = (**self.jvmti_raw).RetransformClasses else {
+                        return Err(crate::error::Error::XValueNotOfType("retransform classes"));
+                    };
+
+                    retransform_classes(
+                        self.jvmti_raw,
+                        1,
+                        &(class.as_raw() as jvmti::native::JavaClass),
+                    );
+                }
             }
-
-            self.jvmti
-                .set_event_notification_mode(jvmti::event::VMEvent::ClassFileLoadHook, false);
         }
+
+        self.jvmti
+            .set_event_notification_mode(jvmti::event::VMEvent::ClassFileLoadHook, false);
 
         Ok(())
     }
 }
 
-fn load_classes_to_retransform<'a>(
-    env: &mut jni::JNIEnv<'a>,
-    class_names_to_retransform: Vec<String>,
-) -> Result<Vec<jni::objects::JClass<'a>>, crate::error::Error> {
-    let classes = class_names_to_retransform
-        .into_iter()
-        .map(|class_name| {
-            loop {
-                let a = crate::jvm::find_class(env, &class_name);
-                match a {
-                    Ok(class) => {
-                        RETRANSFORMING_CLASSES
-                            .lock()
-                            .unwrap()
-                            .insert(class_name.clone());
-                        break unsafe { jni::objects::JClass::from_raw(class.as_raw()) };
-                    }
-                    _ => std::thread::sleep(CHECK_INTERVAL),
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    Ok(classes)
-}
-
 fn load_client_classes<'a>(
     env: &mut jni::JNIEnv<'a>,
     jvmti_raw: jvmti::native::JVMTIEnvPtr,
-    client_context_class: &jni::objects::JClass<'a>,
     retransform_context_class: &jni::objects::JClass<'a>,
     client: &mut Box<dyn ClientTrait>,
     bridge: &mut crate::bridge::JavaBridge,
@@ -288,9 +255,10 @@ fn load_client_classes<'a>(
 
             if loaded_class_names.is_empty() {
                 println!("failed to load classes: {:?}", classes.keys());
+                println!("skipping retransforming");
                 break;
             } else {
-                println!("successfully loaded classes: {:#?}", loaded_class_names);
+                println!("successfully loaded classes: {loaded_class_names:#?}");
             }
         }
 
@@ -300,37 +268,47 @@ fn load_client_classes<'a>(
     load_classes(
         env,
         jvmti_raw,
-        client_context_class,
-        client.client_classes()?,
-        bridge,
-    )?;
-    load_classes(
-        env,
-        jvmti_raw,
         retransform_context_class,
-        client.retransform_classes()?,
+        client.on_classfile_load_hook()?,
         bridge,
     )?;
 
     Ok(())
 }
 
-fn class_file_load_hook(class_name: &String, class_data: Vec<u8>) -> Option<Vec<u8>> {
-    if !RETRANSFORMING_CLASSES.lock().unwrap().contains(class_name) {
-        return None;
-    }
+fn class_file_load_hook(class_name: &str, class_data: Vec<u8>) -> Option<Vec<u8>> {
+    LOADED_CLASSES
+        .lock()
+        .unwrap()
+        .insert(class_name.to_string());
 
-    match BRIDGE.lock().unwrap().as_ref().unwrap().retransform_class(
-        class_name,
-        class_data,
-        CLIENT.lock().unwrap().as_mut().unwrap(),
-    ) {
-        Ok(transformed) => Some(transformed),
+    match BRIDGE
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .on_classfile_load_hook(
+            class_name,
+            class_data,
+            CLIENT.lock().unwrap().as_mut().unwrap(),
+        ) {
+        Ok(dependencies) => {
+            let mut to_loade_lock = CLASSES_TO_LOAD.lock().unwrap();
+            let loaded_lock = LOADED_CLASSES.lock().unwrap();
+            for name in dependencies {
+                if loaded_lock.contains(&name) {
+                    continue;
+                }
+
+                to_loade_lock.insert(name);
+            }
+        }
         Err(e) => {
-            println!("Error in class_file_load_hook: {}", e);
-            None
+            println!("Error in class_file_load_hook: {e}");
         }
     }
+
+    None
 }
 
 #[allow(warnings)]
@@ -370,6 +348,28 @@ unsafe extern "C" fn local_cb_class_file_load_hook(
     };
 }
 
+fn load_classes_to_retransform<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    class_names_to_retransform: Vec<String>,
+) -> Result<Vec<jni::objects::JClass<'a>>, crate::error::Error> {
+    let classes = class_names_to_retransform
+        .into_iter()
+        .map(|class_name| {
+            loop {
+                let a = crate::jvm::find_class(env, &class_name);
+                match a {
+                    Ok(class) => {
+                        break unsafe { jni::objects::JClass::from_raw(class.as_raw()) };
+                    }
+                    _ => std::thread::sleep(CHECK_INTERVAL),
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(classes)
+}
+
 pub fn stringify(input: RawString) -> String {
     unsafe {
         if !input.is_null() {
@@ -382,4 +382,3 @@ pub fn stringify(input: RawString) -> String {
         }
     }
 }
-

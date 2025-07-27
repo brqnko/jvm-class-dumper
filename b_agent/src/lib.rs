@@ -25,7 +25,7 @@ mod win {
             std::thread::spawn(|| match super::process_attach() {
                 Ok(_) => {}
                 Err(e) => {
-                    println!("error: {:?}", e);
+                    println!("error: {e:?}");
                 }
             });
         }

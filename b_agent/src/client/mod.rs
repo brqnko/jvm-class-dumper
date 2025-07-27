@@ -54,25 +54,8 @@ impl ClientTrait for Client {
         Self {}
     }
 
-    // return client classes, which are used by hook
-    // we have to divide classes because retransform classes are called by Rust side
-    fn client_classes(
-        &self,
-    ) -> Result<std::collections::HashMap<String, Vec<u8>>, crate::error::Error> {
-        Ok(CLIENT_CLASSES
-            .iter()
-            .map(|(name, data)| (name.clone(), data.clone()))
-            .collect())
-    }
-
-    // class names to retransform
-    // bew is net.minecraft.client.entity.EntityPlayerSP
-    fn class_names_to_retransform(&self) -> Result<Vec<String>, crate::error::Error> {
-        Ok(vec!["bew".to_string()])
-    }
-
     // return classes to retransform
-    fn retransform_classes(
+    fn on_classfile_load_hook(
         &self,
     ) -> Result<std::collections::HashMap<String, Vec<u8>>, crate::error::Error> {
         Ok(CLIENT_CLASSES
@@ -88,7 +71,7 @@ impl ClientTrait for Client {
 
     // the name of the retransform method in the retransformer class
     fn retransform_method_name(&self) -> &str {
-        "retransform"
+        "getAllDependencies"
     }
 }
 
@@ -103,4 +86,3 @@ mod tests {
         println!("client classes path: {}", path);
     }
 }
-

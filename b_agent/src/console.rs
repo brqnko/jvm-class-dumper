@@ -11,7 +11,7 @@ pub unsafe fn alloc_console() -> Result<(), std::io::Error> {
     use std::os::windows::io::AsRawHandle;
     use winapi::um::consoleapi::AllocConsole;
     use winapi::um::processenv::SetStdHandle;
-    use winapi::um::winbase::{STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    use winapi::um::winbase::{STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
 
     // Try to allocate console
     let result = unsafe { AllocConsole() };
@@ -31,7 +31,7 @@ pub unsafe fn alloc_console() -> Result<(), std::io::Error> {
             }
         }
         Err(e) => {
-            eprintln!("Failed to open CONOUT$ for stdout: {:?}", e);
+            eprintln!("Failed to open CONOUT$ for stdout: {e:?}");
         }
     }
 
@@ -46,7 +46,7 @@ pub unsafe fn alloc_console() -> Result<(), std::io::Error> {
             }
         }
         Err(e) => {
-            eprintln!("Failed to open CONOUT$ for stderr: {:?}", e);
+            eprintln!("Failed to open CONOUT$ for stderr: {e:?}");
         }
     }
 
@@ -54,4 +54,3 @@ pub unsafe fn alloc_console() -> Result<(), std::io::Error> {
 
     Ok(())
 }
-

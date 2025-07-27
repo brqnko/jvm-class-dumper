@@ -86,7 +86,7 @@ pub fn find_class<'a>(
 
     for i in 0..threads_amount {
         let thread = env.get_object_array_element(&threads_array, i);
-        if let Err(_) = thread {
+        if thread.is_err() {
             continue;
         }
         let thread = thread?;
@@ -109,11 +109,11 @@ pub fn find_class<'a>(
                     }],
                 )
             };
-            if let Err(_) = class {
+            if class.is_err() {
                 continue;
             }
             let class = class?.l();
-            if let Err(_) = class {
+            if class.is_err() {
                 continue;
             }
             let class = class?;
@@ -124,10 +124,10 @@ pub fn find_class<'a>(
     }
 
     let attempt = env.find_class(class_name);
-    if let Ok(class) = attempt {
-        if !class.is_null() {
-            return Ok(unsafe { jni::objects::JObject::from_raw(class.as_raw()) });
-        }
+    if let Ok(class) = attempt
+        && !class.is_null()
+    {
+        return Ok(unsafe { jni::objects::JObject::from_raw(class.as_raw()) });
     }
 
     Err(crate::error::Error::XValueNotOfType("find_class"))
